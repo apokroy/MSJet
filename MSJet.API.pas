@@ -254,6 +254,7 @@ function JetGetSystemParameter(instance: JET_INSTANCE; sesid: JET_SESID; paramid
 function JetGetTableColumnInfo(sesid: JET_SESID; tableid: JET_TABLEID; szColumnName: JET_PCSTR; pvResult: Pointer; cbMax, InfoLevel: ULONG): JET_ERR; stdcall;
 function JetGetTableIndexInfo(sesid: JET_SESID; tableid: JET_TABLEID; szIndexName: JET_PCSTR; pvResult: Pointer; cbResult, InfoLevel: ULONG): JET_ERR; stdcall;
 function JetInit(var pinstance: JET_INSTANCE): JET_ERR; stdcall;
+function JetInit2(var pinstance: JET_INSTANCE; grbit: JET_GRBIT): JET_ERR; stdcall;
 function JetMove(sesid: JET_SESID; tableid: JET_TABLEID; cRow: Integer; grbit: JET_GRBIT): JET_ERR; stdcall;
 function JetOpenDatabase(sesid: JET_SESID; szFilename, szConnect: JET_PCSTR; var pdbid: JET_DBID; grbit: JET_GRBIT): JET_ERR; stdcall;
 function JetOpenTable(sesid: JET_SESID; dbid: JET_DBID; szTableName: PAnsiChar; pvParameters: Pointer; cbParameters: ULONG; grbit: JET_GRBIT; var ptableid: JET_TABLEID): JET_ERR; stdcall;
@@ -287,6 +288,9 @@ function JetGotoSecondaryIndexBookmark(sesid: JET_SESID; tableid: JET_TABLEID;
                                       pvPrimaryKey: Pointer; cbPrimaryKey: ULONG;
                                       grdibt: JET_GRBIT): JET_ERR; stdcall;
 
+
+function JetDefragment(sesid: JET_SESID; dbid: JET_DBID; szTableName: JET_PCSTR; pcPasses, pcSeconds: PULONG; grbit: JET_GRBIT): JET_ERR; stdcall;
+
 implementation
 
 const
@@ -316,6 +320,7 @@ function JetGetSystemParameter; external esent name 'JetGetSystemParameter';
 function JetGetTableColumnInfo; external esent name 'JetGetTableColumnInfo';
 function JetGetTableIndexInfo; external esent name 'JetGetTableIndexInfo';
 function JetInit; external esent name 'JetInit';
+function JetInit2; external esent name 'JetInit2';
 function JetMove; external esent name 'JetMove';
 function JetOpenDatabase; external esent name 'JetOpenDatabase';
 function JetOpenTable; external esent name 'JetOpenTable';
@@ -339,8 +344,9 @@ function JetGetBookmark; external esent name 'JetGetBookmark';
 function JetGotoBookmark; external esent name 'JetGotoBookmark';
 function JetGetSecondaryIndexBookmark; external esent name 'JetGetSecondaryIndexBookmark';
 function JetGotoSecondaryIndexBookmark; external esent name 'JetGotoSecondaryIndexBookmark';
+function JetDefragment; external esent name 'JetDefragment';
 
-function  JetError(Err: JET_ERR; instance: JET_INSTANCE = 0; sesid: JET_SESID = 0): JET_ERR;
+function JetError(Err: JET_ERR; instance: JET_INSTANCE = 0; sesid: JET_SESID = 0): JET_ERR;
 var
   Code: ULONG;
   Buf: array[0..1024] of AnsiChar;

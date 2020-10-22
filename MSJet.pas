@@ -8,7 +8,7 @@ interface
 
 {$ALIGN 4}
 
-uses Winapi.Windows, System.Classes, System.SysUtils, System.Variants, System.Generics.Collections,
+uses System.Types, Winapi.Windows, System.Classes, System.SysUtils, System.Variants, System.Generics.Collections,
   MSJet.Consts, MSJet.API;
 
 type
@@ -142,18 +142,32 @@ type
 
   {$region 'Jet'}
 
+  TMSJetRecoveryOption = (
+    RecoveryWithoutUndo = JET_bitRecoveryWithoutUndo,
+    TruncateLogsAfterRecovery = JET_bitTruncateLogsAfterRecovery,
+    ReplayMissingMapEntryDB = JET_bitReplayMissingMapEntryDB,
+    LogStreamMustExist = JET_bitLogStreamMustExist,
+    ReplayIgnoreLostLogs= JET_bitReplayIgnoreLostLogs
+  );
+  TMSJetRecoveryOptions = set of TMSJetRecoveryOption;
+
   TMSJetInstance = class(TPersistent)
   private
     FName: AnsiString;
     FHandle: JET_INSTANCE;
+    FOwnHandle: Boolean;
     FPUCW: Word;
     FMaxVerPages: Cardinal;
+    FCircularLog: Boolean;
+    FRecoveryOptions: TMSJetRecoveryOptions;
     function  GetName: string;
   protected
+    constructor Create; overload;
     procedure BeginCall;
     procedure EndCall;
   public
-    constructor Create(const Name: string);
+    constructor Create(const Name: string); overload;
+    constructor Create(const Handle: JET_INSTANCE); overload;
     destructor Destroy; override;
     procedure Open;
     procedure Close;
@@ -161,6 +175,8 @@ type
     property  Name: string read GetName;
     property  MaxVerPages: Cardinal read FMaxVerPages write FMaxVerPages;
     property  Handle: JET_INSTANCE read FHandle;
+    property  CircularLog: Boolean read FCircularLog write FCircularLog default True;
+    property  RecoveryOptions: TMSJetRecoveryOptions read FRecoveryOptions write FRecoveryOptions;
   end;
 
   TMSJetSession = class(TPersistent)
@@ -177,6 +193,13 @@ type
     property  Instance: TMSJetInstance read FInstance;
     property  Handle: JET_SESID read FHandle;
   end;
+
+  TMSJetDefragmentOption = (
+    BatchStart = JET_bitDefragmentBatchStart,
+    BatchStop = JET_bitDefragmentBatchStop,
+    AvailSpaceTreesOnly = JET_bitDefragmentAvailSpaceTreesOnly
+  );
+  TMSJetDefragmentOptions = set of TMSJetDefragmentOption;
 
   TMSJetDatabase = class(TPersistent)
   private
@@ -195,6 +218,7 @@ type
     procedure Open;
     procedure Close;
     procedure ReadTableList(Items: TMSJetObjectInfoList);
+    procedure Defragment(Passes, Seconds: Cardinal; const Options: TMSJetDefragmentOptions = [BatchStart]);
     property  FileName: string read GetFileName write SetFileName;
     property  Session: TMSJetSession read FSession;
     property  Handle: JET_DBID read FHandle write SetHandle;
@@ -376,6 +400,7 @@ type
   public
     function  Add(const Name, Columns: string; Options: TMSJetIndexOptions = []): TMSJetIndex; overload;
     procedure Reload; override;
+    function  FindByKey(const Key: string): TMSJetIndex;
   end;
 
   {$endregion}
@@ -439,7 +464,7 @@ type
     FColumns: TArray<string>;
     function  GetValue(const Name: string): Variant;
   public
-    constructor Create(Parent: TMSJetTable; const TableName, IndexName, ParentKey: string);
+    constructor Create(Parent: TMSJetTable; const TableName, Key, ParentKey: string);
     destructor Destroy; override;
     function  Sync(IsSync: Boolean): Boolean;
     property  Table: TMSJetTable read FTable;
@@ -450,29 +475,32 @@ type
     property  Value[const Name: string]: Variant read GetValue; default;
   end;
 
+  TMSJetTableFilter = reference to function(const Table: TMSJetTable): Boolean;
+
   TMSJetTable = class(TMSJetMetaObject)
   private
     FColumns: TMSJetColumnList;
     FDatabase: TMSJetDatabase;
-    FPages: Cardinal;
     FDensity: Cardinal;
     FIndexes: TMSJetIndexList;
     FIndexName: AnsiString;
+    FIsInsert: Boolean;
+    FJoins: TDictionary<string, TMSJetJoin>;
     FKey: Pointer;
     FKeySize: ULONG;
+    FPages: Cardinal;
     FSeekKeys: array of Variant;
     FSeekOption: TMSJetSeekOption;
     FSeekSetRange: Boolean;
-    FIsInsert: Boolean;
-    FJoins: TDictionary<string, TMSJetJoin>;
+    function  GetActive: Boolean;
+    function  GetColumn(const ColumnName: string): TMSJetColumn;
+    function  GetIndexName: string;
+    function  GetJoinCount: Integer;
+    function  GetJoins: TArray<TMSJetJoin>;
+    function  GetLink(const ParentKey: string): TMSJetJoin;
     procedure SetColumns(const Value: TMSJetColumnList);
     procedure SetIndexes(const Value: TMSJetIndexList);
-    function  GetIndexName: string;
     procedure SetIndexName(const Value: string);
-    function  GetColumn(const ColumnName: string): TMSJetColumn;
-    function  GetLink(const ParentKey: string): TMSJetJoin;
-    function  GetJoins: TArray<TMSJetJoin>;
-    function  GetJoinCount: Integer;
   protected
     function  GetColumnText(id: JET_COLUMNID): string;
     procedure MakeKey(Column: TMSJetColumn; const Value: Variant; Options: TMSJetKeyOptions);
@@ -492,23 +520,28 @@ type
     destructor Destroy; override;
     procedure Open;
     procedure Close;
-    function  First: Boolean;
-    function  Last: Boolean;
-    function  Next: Boolean;
-    function  Previous: Boolean;
+    function  First: Boolean; overload;
+    function  First(const Filter: TMSJetTableFilter): Boolean; overload;
+    function  Last: Boolean; overload;
+    function  Last(const Filter: TMSJetTableFilter): Boolean; overload;
+    function  Next: Boolean; overload;
+    function  Next(const Filter: TMSJetTableFilter): Boolean; overload;
+    function  Previous: Boolean; overload;
+    function  Previous(const Filter: TMSJetTableFilter): Boolean; overload;
     procedure Insert;
     procedure Edit;
     procedure Cancel;
     procedure Post;
     procedure Delete;
     function  AddColumn(const Name: string; DataType: TMSJetColumnType; Size: ULONG = 0; Options: TMSJetColumnOptions = []): TMSJetColumn;
-    function  Seek(const Keys: array of Variant; Option: TMSJetSeekOption = jetSeekEQ; SetRange: Boolean = False): Boolean;
+    function  Seek(const Keys: array of Variant; Option: TMSJetSeekOption = jetSeekEQ; SetRange: Boolean = False; const Filter: TMSJetTableFilter = nil): Boolean;
     procedure ClearRange;
     function  RetrieveKey: Boolean;
     function  GoToKey: Boolean;
     function  CreateBookmark: JetBookmark;
     function  GotoBookmark(const Bookmark: JetBookmark): Boolean;
-    function  Join(const TableName, IndexName, ParentKey: string): TMSJetJoin;
+    function  Join(const TableName, Key, ParentKey: string): TMSJetJoin;
+    property  Active: Boolean read GetActive;
     property  IndexName: string read GetIndexName write SetIndexName;
     property  Cols[const ColumnName: string]: TMSJetColumn read GetColumn; default;
     property  Link[const ParentKey: string]: TMSJetJoin read GetLink;
@@ -601,9 +634,222 @@ const
   {$endregion}
 
 
+const
+  ColumnTypeNames: array[TMSJetColumnType] of string = (
+    'Bit',
+    'UByte',
+    'Short',
+    'Long',
+    'Currency',
+    'Single',
+    'Double',
+    'DateTime',
+    'Binary',
+    'Text',
+    'LongBinary',
+    'LongText',
+    'SLV',
+    'ULong',
+    'LongLong',
+    'GUID',
+    'UShort'
+  );
+
+function ColumnTypeToName(const DataType: TMSJetColumnType): string; inline;
+function NameToColumnType(const Name: string): TMSJetColumnType; inline;
+function NameToColumnOption(const Name: string): TMSJetColumnOption; inline;
+function NameToColumnOptions(const Name: string): TMSJetColumnOptions;
+function ColumnOptionToName(const Option: TMSJetColumnOption): string; inline;
+function ColumnOptionsToName(const Options: TMSJetColumnOptions): string;
+function NameToIndexOption(const Name: string): TMSJetIndexOption; inline;
+function NameToIndexOptions(const Text: string): TMSJetIndexOptions;
+function IndexOptionToName(const Option: TMSJetIndexOption): string; inline;
+function IndexOptionsToName(const Options: TMSJetIndexOptions): string;
+
+resourcestring
+  SJetInvalidColumnType = 'Invalid column type "%s"';
+  SJetInvalidOption = 'Invalid option "%"';
+  SJetItemByNameNotFound = 'Item with name "%s" not foud';
+  SJetIndexForColumnNotFound = 'Index for column "%s" not found';
+
 implementation
 
 uses StrUtils;
+
+function ColumnTypeToName(const DataType: TMSJetColumnType): string;
+begin
+  Result := ColumnTypeNames[DataType];
+end;
+
+function NameToColumnType(const Name: string): TMSJetColumnType;
+var
+  I: TMSJetColumnType;
+begin
+  for I := Low(TMSJetColumnType) to High(TMSJetColumnType) do
+    if ColumnTypeNames[I] = Name then
+    begin
+      Result := I;
+      Exit;
+    end;
+
+  raise EMSJetError.CreateResFmt(@SJetInvalidColumnType, [Name]);
+end;
+
+function NameToColumnOption(const Name: string): TMSJetColumnOption;
+begin
+  if Name = 'Fixed' then
+    Result := jetColumnFixed
+  else if Name = 'Tagged' then
+    Result := jetColumnTagged
+  else if Name = 'NotNull' then
+    Result := jetColumnNotNULL
+  else if Name = 'Versioned' then
+    Result := jetColumnVersion
+  else if Name = 'AutoIncrement' then
+    Result := jetColumnAutoincrement
+  else if Name = 'Updatable' then
+    Result := jetColumnUpdatable
+  else
+    raise EMSJetError.CreateResFmt(@SJetInvalidOption, [Name]);
+end;
+
+function NameToColumnOptions(const Name: string): TMSJetColumnOptions;
+var
+  OptionList: TStringDynArray;
+  Option: string;
+begin
+  Result := [];
+  OptionList := SplitString(Name, ',');
+  if OptionList <> nil then
+    for Option in OptionList do
+      Include(Result, NameToColumnOption(Trim(Option)));
+end;
+
+function ColumnOptionToName(const Option: TMSJetColumnOption): string;
+begin
+  case Option of
+    jetColumnFixed:
+      Result := 'Fixed';
+    jetColumnTagged:
+      Result := 'Tagged';
+    jetColumnNotNULL:
+      Result := 'NotNull';
+    jetColumnVersion:
+      Result := 'Versioned';
+    jetColumnAutoincrement:
+      Result := 'AutoIncrement';
+    jetColumnUpdatable:
+      Result := 'Updatable';
+    else
+      Result := '';
+  end;
+end;
+
+function ColumnOptionsToName(const Options: TMSJetColumnOptions): string;
+var
+  Option: TMSJetColumnOption;
+  Name: string;
+begin
+  Result := '';
+  for Option := Low(TMSJetColumnOption) to High(TMSJetColumnOption) do
+  begin
+    if Option in Options then
+    begin
+      Name := ColumnOptionToName(Option);
+      if Name <> '' then
+      begin
+        if Result = '' then
+          Result := Name
+        else
+          Result := Result + ', ' + Name;
+      end;
+    end;
+  end;
+end;
+
+function NameToIndexOption(const Name: string): TMSJetIndexOption;
+begin
+  if Name = 'Unique' then
+    Result := jetIndexUnique
+  else if Name = 'Primary' then
+    Result := jetIndexPrimary
+  else if Name = 'DisallowNull' then
+    Result := jetIndexDisallowNull
+  else if Name = 'IgnoreNull' then
+    Result := jetIndexIgnoreNull
+  else if Name = 'IgnoreAnyNull' then
+    Result := jetIndexIgnoreAnyNull
+  else if Name = 'IgnoreFirstNull' then
+    Result := jetIndexIgnoreFirstNull
+  else if Name = 'LazyFlush' then
+    Result := jetIndexLazyFlush
+  else if Name = 'Empty' then
+    Result := jetIndexEmpty
+  else if Name = 'SortNullsHigh' then
+    Result := jetIndexSortNullsHigh
+  else
+    raise EMSJetError.CreateResFmt(@SJetInvalidOption, [Name]);
+end;
+
+function NameToIndexOptions(const Text: string): TMSJetIndexOptions;
+var
+  OptionList: TStringDynArray;
+  Option: string;
+begin
+  Result := [];
+  OptionList := SplitString(Text, ',');
+  if OptionList <> nil then
+    for Option in OptionList do
+      Include(Result, NameToIndexOption(Trim(Option)));
+end;
+
+function IndexOptionToName(const Option: TMSJetIndexOption): string;
+begin
+  case Option of
+    jetIndexUnique:
+      Result := 'Unique';
+    jetIndexPrimary:
+      Result := 'Primary';
+    jetIndexDisallowNull:
+      Result := 'DisallowNull';
+    jetIndexIgnoreNull:
+      Result := 'IgnoreNull';
+    jetIndexIgnoreAnyNull:
+      Result := 'IgnoreAnyNull';
+    jetIndexIgnoreFirstNull:
+      Result := 'IgnoreFirstNull';
+    jetIndexLazyFlush:
+      Result := 'LazyFlush';
+    jetIndexEmpty:
+      Result := 'Empty';
+    jetIndexSortNullsHigh:
+      Result := 'SortNullsHigh';
+    else
+      Result := '';
+  end;
+end;
+
+function IndexOptionsToName(const Options: TMSJetIndexOptions): string;
+var
+  Option: TMSJetIndexOption;
+  Name: string;
+begin
+  Result := '';
+  for Option := Low(TMSJetIndexOption) to High(TMSJetIndexOption) do
+  begin
+    if Option in Options then
+    begin
+      Name := IndexOptionToName(Option);
+      if Name <> '' then
+      begin
+        if Result = '' then
+          Result := Name
+        else
+          Result := Result + ', ' + Name;
+      end;
+    end;
+  end;
+end;
 
 function SetToInt(const Value): Cardinal;
 begin
@@ -706,7 +952,7 @@ function TMSJetObjectList<TItem>.ByName(const Name: string): TItem;
 begin
   Result := Find(Name);
   if Result = nil then
-    raise EMSJetError.Create('Item "' + Name + '" not found');
+    raise EMSJetError.CreateResFmt(@SJetItemByNameNotFound, [Name]);
 end;
 
 function TMSJetObjectList<TItem>.FindOrAdd(const Name: string): TItem;
@@ -784,14 +1030,28 @@ end;
 
 { TMSJetInstance }
 
-constructor TMSJetInstance.Create(const Name: string);
+constructor TMSJetInstance.Create;
 begin
   inherited Create;
-  FName := AnsiString(Name);
 
   FPUCW := Get8087CW;
   FHandle := 0;
   FMaxVerPages := 16 * 1024;
+end;
+
+constructor TMSJetInstance.Create(const Name: string);
+begin
+  Create;
+  FName := AnsiString(Name);
+  FCircularLog := True;
+  FRecoveryOptions := [TruncateLogsAfterRecovery];
+end;
+
+constructor TMSJetInstance.Create(const Handle: JET_INSTANCE);
+begin
+  Create;
+  FHandle := Handle;
+  FOwnHandle := False;
 end;
 
 destructor TMSJetInstance.Destroy;
@@ -816,10 +1076,13 @@ begin
   BeginCall;
   try
     JetError(JetCreateInstance(FHandle, PAnsiChar(FName)));
+    FOwnHandle := True;
 
     JetError(JetSetSystemParameter(FHandle, 0, JET_paramMaxVerPages, MaxVerPages, nil));
+    if CircularLog then
+      JetError(JetSetSystemParameter(FHandle, 0, jet_paramCircularLog, 1, nil));
 
-    JetError(JetInit(FHandle));
+    JetError(JetInit2(FHandle, SetToInt(RecoveryOptions)));
   finally
     EndCall;
   end;
@@ -827,7 +1090,7 @@ end;
 
 procedure TMSJetInstance.Close;
 begin
-  if FHandle <> 0 then
+  if (FHandle <> 0) and FOwnHandle then
   begin
     JetError(JetTerm(FHandle));
     FHandle := 0;
@@ -925,13 +1188,35 @@ begin
 end;
 
 procedure TMSJetDatabase.Close;
+var
+  Err: JET_ERR;
 begin
   if FOwnHandle and (FHandle <> 0) then
   begin
     JetError(JetCloseDatabase(Session.Handle, FHandle, 0));
-    JetError(JetDetachDatabase(Session.Handle, PAnsiChar(FFileName)));
+    Err := JetDetachDatabase(Session.Handle, PAnsiChar(FFileName));
+    //TODO: Should be a better way
+    if Err <> JET_errDatabaseInUse then //Prevent error, if attached in other TMSJetDatabase object
+      JetError(Err);
     FHandle := 0;
   end;
+end;
+
+procedure TMSJetDatabase.Defragment(Passes, Seconds: Cardinal; const Options: TMSJetDefragmentOptions);
+var
+  pPasses, pSeconds: PULONG;
+begin
+  if Passes = 0 then
+    pPasses := nil
+  else
+    pPasses := @Passes;
+
+  if Seconds = 0 then
+    pSeconds := nil
+  else
+    pSeconds := @Seconds;
+
+  JetError(JetDefragment(Session.Handle, Handle, nil, pPasses, pSeconds, SetToInt(Options)));
 end;
 
 procedure TMSJetDatabase.SetHandle(const Value: JET_DBID);
@@ -1592,6 +1877,8 @@ procedure TMSJetColumn.SetAsInt64(const Value: Int64);
 begin
   if DataType = jetLongLong then
     Update(@Value, SizeOf(Value))
+  else if DataType in [jetLong, jetUByte, jetShort, jetULong, jetUShort] then
+    AsInteger := Value
   else
     AsFloat := Value;
 end;
@@ -1834,6 +2121,21 @@ begin
   Result.FName := AnsiString(Name);
 end;
 
+function TMSJetIndexList.FindByKey(const Key: string): TMSJetIndex;
+var
+  I: Integer;
+begin
+  Result := nil;
+
+  for I := 0 to Count - 1 do
+    if Items[I].Columns[0].Name = Key then
+    begin
+      Result := Items[I];
+      if Items[I].ColumnCount = 1 then
+        Exit;
+    end;
+end;
+
 procedure TMSJetIndexList.Reload;
 var
   List: JET_INDEXLIST;
@@ -1862,15 +2164,20 @@ end;
 
 { TMSJetJoin }
 
-constructor TMSJetJoin.Create(Parent: TMSJetTable; const TableName, IndexName, ParentKey: string);
+constructor TMSJetJoin.Create(Parent: TMSJetTable; const TableName, Key, ParentKey: string);
+var
+  Index: TMSJetIndex;
 begin
   inherited Create;
   FParent := Parent;
   FParentKey := ParentKey;
 
   FTable := TMSJetTable.Create(Parent.Database, TableName);
-  FTable.IndexName := IndexName;
   FTable.Open;
+  Index := FTable.Indexes.FindByKey(Key);
+  if Index = nil then
+    raise EMSJetError.CreateResFmt(@SJetIndexForColumnNotFound, [Key]);
+  FTable.IndexName := Index.Name;
 
   Parent.FJoins.Add(ParentKey, Self);
 end;
@@ -1990,6 +2297,17 @@ begin
   SyncCursor(Result);
 end;
 
+function TMSJetTable.First(const Filter: TMSJetTableFilter): Boolean;
+begin
+  Result := First;
+  while Result do
+  begin
+    if Filter(Self) then
+      Break;
+    Result := Next;
+  end;
+end;
+
 function TMSJetTable.Last: Boolean;
 var
   Err: JET_ERR;
@@ -2006,6 +2324,17 @@ begin
   end;
 
   SyncCursor(Result);
+end;
+
+function TMSJetTable.Last(const Filter: TMSJetTableFilter): Boolean;
+begin
+  Result := Last;
+  while Result do
+  begin
+    if Filter(Self) then
+      Break;
+    Result := Previous;
+  end;
 end;
 
 function TMSJetTable.Next: Boolean;
@@ -2026,6 +2355,17 @@ begin
   SyncCursor(Result);
 end;
 
+function TMSJetTable.Next(const Filter: TMSJetTableFilter): Boolean;
+begin
+  Result := Next;
+  while Result do
+  begin
+    if Filter(Self) then
+      Break;
+    Result := Next;
+  end;
+end;
+
 function TMSJetTable.Previous: Boolean;
 var
   Err: JET_ERR;
@@ -2042,6 +2382,17 @@ begin
   end;
 
   SyncCursor(Result);
+end;
+
+function TMSJetTable.Previous(const Filter: TMSJetTableFilter): Boolean;
+begin
+  Result := Previous;
+  while Result do
+  begin
+    if Filter(Self) then
+      Break;
+    Result := Previous;
+  end;
 end;
 
 procedure TMSJetTable.Delete;
@@ -2071,9 +2422,9 @@ begin
   FIsInsert := True;
 end;
 
-function TMSJetTable.Join(const TableName, IndexName, ParentKey: string): TMSJetJoin;
+function TMSJetTable.Join(const TableName, Key, ParentKey: string): TMSJetJoin;
 begin
-  Result := TMSJetJoin.Create(Self, TableName, IndexName, ParentKey);
+  Result := TMSJetJoin.Create(Self, TableName, Key, ParentKey);
 end;
 
 procedure TMSJetTable.Edit;
@@ -2122,7 +2473,7 @@ begin
   FSeekSetRange := False;
 end;
 
-function TMSJetTable.Seek(const Keys: array of Variant; Option: TMSJetSeekOption = jetSeekEQ; SetRange: Boolean = False): Boolean;
+function TMSJetTable.Seek(const Keys: array of Variant; Option: TMSJetSeekOption = jetSeekEQ; SetRange: Boolean = False; const Filter: TMSJetTableFilter = nil): Boolean;
 var
   I: Integer;
   Index: TMSJetIndex;
@@ -2166,6 +2517,16 @@ begin
   FSeekSetRange := SetRange;
 
   SyncCursor(Result);
+
+  if Assigned(Filter) then
+  begin
+    while Result do
+    begin
+      if Filter(Self) then
+        Break;
+      Result := Next;
+    end;
+  end;
 end;
 
 function TMSJetTable.RetrieveKey: Boolean;
@@ -2351,6 +2712,12 @@ procedure TMSJetTable.MakeKey(Column: TMSJetColumn; const Value: Variant; Option
   end;
 
 begin
+  if VarIsNull(Value) then
+  begin
+    JetError(JetMakeKey(Database.Session.Handle, Handle, nil, 0, SetToInt(Options)));
+    Exit;
+  end;
+
   case Column.DataType of
     jetBit:
       MakeBool(Value);
@@ -2403,6 +2770,11 @@ begin
     FreeAndNil(Result);
     raise;
   end;
+end;
+
+function TMSJetTable.GetActive: Boolean;
+begin
+  Result := FHandle > 0;
 end;
 
 function TMSJetTable.GetColumn(const ColumnName: string): TMSJetColumn;
